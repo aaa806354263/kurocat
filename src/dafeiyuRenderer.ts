@@ -754,17 +754,17 @@ export class DaFeiYuRenderer {
   private drawBodyGlow(ctx: CanvasRenderingContext2D, g: ReturnType<DaFeiYuRenderer['computeGeom']>): void {
     const now = performance.now();
     // Gentle breathing pulse, synced to the existing bodyBob spring for a living aura.
-    const pulse = 1 + Math.sin(now * 0.0026) * 0.06 + this.bodyBob * 0.05;
+    const pulse = 1 + Math.sin(now * 0.0026) * 0.10 + this.bodyBob * 0.06;
     const cx = 0;                       // centered on her torso in local (post-translate) space
     const cy = -g.drawH * 0.42;         // biased toward her upper body / head
-    const baseR = g.drawW * 0.62 * pulse;
+    const baseR = g.drawW * 0.85 * pulse;
 
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const glow = ctx.createRadialGradient(cx, cy, baseR * 0.10, cx, cy, baseR);
-    glow.addColorStop(0.00, 'rgba(120, 210, 255, 0.30)');
-    glow.addColorStop(0.35, 'rgba(80, 170, 245, 0.16)');
-    glow.addColorStop(0.70, 'rgba(60, 130, 230, 0.06)');
+    glow.addColorStop(0.00, 'rgba(120, 210, 255, 0.70)');
+    glow.addColorStop(0.35, 'rgba(80, 170, 245, 0.42)');
+    glow.addColorStop(0.70, 'rgba(60, 130, 230, 0.18)');
     glow.addColorStop(1.00, 'rgba(50, 110, 210, 0.00)');
     ctx.fillStyle = glow;
     ctx.beginPath();
