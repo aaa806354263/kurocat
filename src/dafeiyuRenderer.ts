@@ -747,6 +747,32 @@ export class DaFeiYuRenderer {
     ctx.restore();
   }
 
+  /**
+   * Soft ocean-blue aura drawn BEHIND the BigFish body sprite (same transform/clip space),
+   * so it hugs her silhouette & breathes gently with the body bob. Pure additive glow.
+   */
+  private drawBodyGlow(ctx: CanvasRenderingContext2D, g: ReturnType<DaFeiYuRenderer['computeGeom']>): void {
+    const now = performance.now();
+    // Gentle breathing pulse, synced to the existing bodyBob spring for a living aura.
+    const pulse = 1 + Math.sin(now * 0.0026) * 0.06 + this.bodyBob * 0.05;
+    const cx = 0;                       // centered on her torso in local (post-translate) space
+    const cy = -g.drawH * 0.42;         // biased toward her upper body / head
+    const baseR = g.drawW * 0.62 * pulse;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const glow = ctx.createRadialGradient(cx, cy, baseR * 0.10, cx, cy, baseR);
+    glow.addColorStop(0.00, 'rgba(120, 210, 255, 0.30)');
+    glow.addColorStop(0.35, 'rgba(80, 170, 245, 0.16)');
+    glow.addColorStop(0.70, 'rgba(60, 130, 230, 0.06)');
+    glow.addColorStop(1.00, 'rgba(50, 110, 210, 0.00)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, baseR, baseR * 1.12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   /** Layer 1 (drawn BEFORE keyboard & mouse): waist-anchored whale tail + BigFish sprite + Live2D eyes + soft blush. */
   public renderBody(ctx: CanvasRenderingContext2D, now: number, layout: DaFeiYuLayout): void {
     const g = this.computeGeom(now, layout);
@@ -785,6 +811,7 @@ export class DaFeiYuRenderer {
       ctx.translate(g.charCenterX, g.pivotY);
       ctx.rotate(this.bodyTilt);
       ctx.scale(1 + this.bodyBob * 0.022, 1 - this.bodyBob * 0.018);
+      this.drawBodyGlow(ctx, g);
       ctx.drawImage(img, -g.drawW * 0.5, -g.drawH + g.pivotOff, g.drawW, g.drawH);
 
       // Live2D eye gaze toward mouse/keyboard when eyes are open
