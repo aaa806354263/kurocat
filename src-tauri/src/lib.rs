@@ -874,8 +874,8 @@ async fn start_pet_drag(app: AppHandle) -> bool {
         use windows_sys::Win32::Foundation::POINT;
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetCursorPos, GetSystemMetrics, SetWindowPos, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-            SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+            GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+            SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
         };
 
         let Some(win) = app.get_webview_window("main") else {
@@ -1006,7 +1006,10 @@ async fn start_pet_slingshot(app: AppHandle) -> bool {
     {
         use windows_sys::Win32::Foundation::POINT;
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetSystemMetrics};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+            SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+        };
 
         let Some(win) = app.get_webview_window("main") else {
             return false;
