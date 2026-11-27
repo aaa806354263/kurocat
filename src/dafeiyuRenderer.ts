@@ -804,6 +804,16 @@ export class DaFeiYuRenderer {
 
     const img = this.sprites[exprKey] || this.sprites.idle;
     if (img && img.complete && img.naturalWidth > 0) {
+      // Draw the aura OUTSIDE the body clip so it can bloom beyond her silhouette.
+      // (Previously it was drawn inside the clip AND behind the opaque body, so the
+      // clip cut off the outer ring and the body hid the core -> glow was invisible.)
+      ctx.save();
+      ctx.translate(g.charCenterX, g.pivotY);
+      ctx.rotate(this.bodyTilt);
+      ctx.scale(1 + this.bodyBob * 0.022, 1 - this.bodyBob * 0.018);
+      this.drawBodyGlow(ctx, g);
+      ctx.restore();
+
       ctx.save();
       ctx.beginPath();
       ctx.rect(0, 0, layout.logicalW, layout.kbCenterY - layout.kbHeight * 0.36);
@@ -811,7 +821,6 @@ export class DaFeiYuRenderer {
       ctx.translate(g.charCenterX, g.pivotY);
       ctx.rotate(this.bodyTilt);
       ctx.scale(1 + this.bodyBob * 0.022, 1 - this.bodyBob * 0.018);
-      this.drawBodyGlow(ctx, g);
       ctx.drawImage(img, -g.drawW * 0.5, -g.drawH + g.pivotOff, g.drawW, g.drawH);
 
       // Live2D eye gaze toward mouse/keyboard when eyes are open
