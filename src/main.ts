@@ -1088,6 +1088,11 @@ async function bootstrap(): Promise<void> {
   });
 
   // Left-click keycap toggle in tail-picker mode, OR drag to reposition transparent window (both 2D & 3D canvases!)
+  // Gesture model:
+  //   • Single drag      -> normal reposition; a fast release FLINGS the pet (throw physics, Rust side).
+  //   • Double-click-drag-> slingshot: stretch an invisible band, release launches the pet opposite the pull.
+  let lastPetDragDownAt = 0;
+  const PET_DOUBLE_CLICK_MS = 320;
   const handleCanvasMouseDown = async (e: MouseEvent) => {
     if (e.button === 0) {
       closeContextMenu();
@@ -1101,11 +1106,15 @@ async function bootstrap(): Promise<void> {
         }
       }
       if (settings.clickThroughLocked && !altOverride && !e.altKey) return;
+      const now = performance.now();
+      const isSlingshot = now - lastPetDragDownAt <= PET_DOUBLE_CLICK_MS;
+      lastPetDragDownAt = now;
       canvas.classList.add('pet-dragging');
       canvas3d.classList.add('pet-dragging');
       void invoke('set_dragging', { dragging: true });
       try {
-        const nativeHandled = await invoke<boolean>('start_pet_drag').catch(() => false);
+        const command = isSlingshot ? 'start_pet_slingshot' : 'start_pet_drag';
+        const nativeHandled = await invoke<boolean>(command).catch(() => false);
         if (!nativeHandled) {
           await getCurrentWindow().startDragging();
         }

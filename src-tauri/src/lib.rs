@@ -705,6 +705,162 @@ fn set_dragging(state: State<'_, AppState>, dragging: bool) {
     state.dragging.store(dragging, Ordering::Relaxed);
 }
 
+// --- Pet throw / slingshot ballistic physics (Windows) ---
+// Window movement is native (`SetWindowPos`), so launch physics must live here.
+#[cfg(windows)]
+const THROW_VELOCITY_WINDOW_MS: u64 = 70; // sample window to measure release velocity
+#[cfg(windows)]
+const THROW_MIN_SPEED: f64 = 200.0; // px/s — below this a release is a plain drop, not a throw
+#[cfg(windows)]
+const THROW_MAX_SPEED: f64 = 6000.0; // px/s — clamp so a flick can't rocket off-screen forever
+#[cfg(windows)]
+const BALLISTIC_FRICTION: f64 = 0.90; // velocity multiplier per 1/60s
+#[cfg(windows)]
+const BALLISTIC_BOUNCE: f64 = 0.55; // velocity retained when hitting a screen edge
+#[cfg(windows)]
+const BALLISTIC_STOP_SPEED: f64 = 40.0; // px/s — below this the pet settles
+#[cfg(windows)]
+const SLINGSHOT_LAUNCH_FACTOR: f64 = 9.0; // px of pull -> px/s of launch speed
+#[cfg(windows)]
+const SLINGSHOT_MAX_SPEED: f64 = 7000.0; // px/s — cap slingshot power
+
+/// Move the transparent pet window to a physical position, handling Win7 ULW overlay.
+#[cfg(windows)]
+fn move_pet_window(hwnd: windows_sys::Win32::Foundation::HWND, is_win7: bool, x: i32, y: i32) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+    if is_win7 {
+        win7_layered::set_position(x, y);
+        if win7_layered::is_overlay_active() {
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    std::ptr::null_mut(),
+                    x,
+                    y,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+        }
+    } else {
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
+/// Launch velocity (px/s) measured from recent cursor samples over `THROW_VELOCITY_WINDOW_MS`.
+#[cfg(windows)]
+fn compute_throw_velocity(samples: &[(Instant, i32, i32)]) -> (f64, f64) {
+    if samples.len() < 2 {
+        return (0.0, 0.0);
+    }
+    let last = samples.last().unwrap();
+    let window = Duration::from_millis(THROW_VELOCITY_WINDOW_MS);
+    let first = samples
+        .iter()
+        .find(|s| last.0.duration_since(s.0) <= window)
+        .unwrap_or(&samples[0]);
+    let dt = last.0.duration_since(first.0).as_secs_f64();
+    if dt < 0.001 {
+        return (0.0, 0.0);
+    }
+    let vx = (last.1 - first.1) as f64 / dt;
+    let vy = (last.2 - first.2) as f64 / dt;
+    (vx, vy)
+}
+
+/// Slide the pet window ballistically with friction + screen-edge bounce until it settles.
+#[cfg(windows)]
+fn run_ballistic_physics(
+    hwnd_raw: isize,
+    is_win7: bool,
+    mut wx: i32,
+    mut wy: i32,
+    win_w: i32,
+    win_h: i32,
+    mut vx: f64,
+    mut vy: f64,
+) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN,
+    };
+
+    let (v_left, v_top, v_w, v_h) = unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
+    };
+    let v_right = v_left + v_w.max(320);
+    let v_bottom = v_top + v_h.max(240);
+
+    // Mirror clamp_pet_drag_position padding so the pet can't vanish off-screen.
+    let top_headroom = ((win_h as f64) * 0.17).round() as i32;
+    let side_margin = ((win_w as f64) * 0.10).round() as i32;
+    let min_visible_h = ((win_h as f64) * 0.68).round() as i32;
+    let min_x = v_left - side_margin;
+    let max_x = (v_right - win_w + side_margin).max(min_x);
+    let min_y = v_top - top_headroom;
+    let max_y = (v_bottom - min_visible_h).max(min_y);
+
+    let hwnd = hwnd_raw as HWND;
+    let mut last_time = Instant::now();
+
+    loop {
+        let now = Instant::now();
+        let dt = now.duration_since(last_time).as_secs_f64().max(0.001);
+        last_time = now;
+
+        wx += (vx * dt).round() as i32;
+        wy += (vy * dt).round() as i32;
+
+        // Bounce off virtual-screen bounds.
+        if wx <= min_x {
+            wx = min_x;
+            vx = -vx * BALLISTIC_BOUNCE;
+        } else if wx >= max_x {
+            wx = max_x;
+            vx = -vx * BALLISTIC_BOUNCE;
+        }
+        if wy <= min_y {
+            wy = min_y;
+            vy = -vy * BALLISTIC_BOUNCE;
+        } else if wy >= max_y {
+            wy = max_y;
+            vy = -vy * BALLISTIC_BOUNCE;
+        }
+
+        move_pet_window(hwnd, is_win7, wx, wy);
+
+        // Frame-rate independent friction.
+        let friction = BALLISTIC_FRICTION.powf(dt * 60.0);
+        vx *= friction;
+        vy *= friction;
+
+        let speed = (vx * vx + vy * vy).sqrt();
+        if speed < BALLISTIC_STOP_SPEED {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(8));
+    }
+}
+
 /// Native 120Hz unclamped pointer drag on Windows:
 /// Bypasses Windows' `WM_NCLBUTTONDOWN(HTCAPTION)` titlebar drag loop so Aero Snap never fights
 /// the user and the transparent headspace above the cat's ears can smoothly slide above `y = 0`,
@@ -760,6 +916,8 @@ async fn start_pet_drag(app: AppHandle) -> bool {
             let mut last_x = start_wx;
             let mut last_y = start_wy;
             let hwnd = hwnd_raw as windows_sys::Win32::Foundation::HWND;
+            // Cursor samples for measuring release velocity (throw-on-release).
+            let mut samples: Vec<(Instant, i32, i32)> = Vec::with_capacity(32);
 
             loop {
                 let lbtn_down = unsafe { (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 };
@@ -768,6 +926,12 @@ async fn start_pet_drag(app: AppHandle) -> bool {
                 }
                 let mut pt = POINT { x: 0, y: 0 };
                 if unsafe { GetCursorPos(&mut pt) } != 0 {
+                    // Record raw cursor for release-velocity measurement.
+                    let now = Instant::now();
+                    samples.push((now, pt.x, pt.y));
+                    let cutoff = now - Duration::from_millis(THROW_VELOCITY_WINDOW_MS * 3);
+                    samples.retain(|s| s.0 >= cutoff);
+
                     let (v_left, v_top, v_w, v_h) = unsafe {
                         (
                             GetSystemMetrics(SM_XVIRTUALSCREEN),
@@ -789,38 +953,158 @@ async fn start_pet_drag(app: AppHandle) -> bool {
                     if nx != last_x || ny != last_y {
                         last_x = nx;
                         last_y = ny;
-                        if is_win7 {
-                            win7_layered::set_position(nx, ny);
-                            if win7_layered::is_overlay_active() {
-                                unsafe {
-                                    SetWindowPos(
-                                        hwnd,
-                                        std::ptr::null_mut(),
-                                        nx,
-                                        ny,
-                                        0,
-                                        0,
-                                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                                    );
-                                }
-                            }
-                        } else {
-                            unsafe {
-                                SetWindowPos(
-                                    hwnd,
-                                    std::ptr::null_mut(),
-                                    nx,
-                                    ny,
-                                    0,
-                                    0,
-                                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                                );
-                            }
-                        }
+                        move_pet_window(hwnd, is_win7, nx, ny);
                     }
                 }
                 std::thread::sleep(Duration::from_millis(8));
             }
+
+            // Throw-on-release: if the cursor was moving fast enough at release,
+            // let the pet keep flying with inertia (friction + edge bounce).
+            let (tvx, tvy) = compute_throw_velocity(&samples);
+            let speed = (tvx * tvx + tvy * tvy).sqrt();
+            if speed >= THROW_MIN_SPEED {
+                // Clamp so a violent flick can't send the pet past readable speed.
+                let scale = if speed > THROW_MAX_SPEED {
+                    THROW_MAX_SPEED / speed
+                } else {
+                    1.0
+                };
+                run_ballistic_physics(
+                    hwnd_raw,
+                    is_win7,
+                    last_x,
+                    last_y,
+                    win_w,
+                    win_h,
+                    tvx * scale,
+                    tvy * scale,
+                );
+            }
+
+            dragging_flag.store(false, Ordering::Relaxed);
+        })
+        .await;
+
+        save_window_pos(app);
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        false
+    }
+}
+
+/// Slingshot (double-click + drag): anchor where the grab started, let the window follow the
+/// cursor while held (stretching an invisible rubber band), then on release launch the pet in the
+/// OPPOSITE direction of the pull with force proportional to stretch distance.
+/// Returns `true` when handled natively (Windows); `false` otherwise.
+#[tauri::command]
+async fn start_pet_slingshot(app: AppHandle) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetSystemMetrics};
+
+        let Some(win) = app.get_webview_window("main") else {
+            return false;
+        };
+        let is_win7 = win_needs_win7_ulw();
+        let hwnd_raw: isize = match win.hwnd() {
+            Ok(h) => h.0 as isize,
+            Err(_) => return false,
+        };
+        let (start_wx, start_wy, win_w, win_h) = if is_win7 {
+            match win7_layered::get_rect() {
+                Some((x, y, w, h)) => (x, y, w, h),
+                None => return false,
+            }
+        } else {
+            let Ok(pos) = win.outer_position() else {
+                return false;
+            };
+            let Ok(sz) = win.outer_size() else {
+                return false;
+            };
+            (pos.x, pos.y, sz.width as i32, sz.height as i32)
+        };
+
+        // Anchor = cursor position at grab; this is the fixed end of the rubber band.
+        let mut anchor = POINT { x: 0, y: 0 };
+        if unsafe { GetCursorPos(&mut anchor) } == 0 {
+            return false;
+        }
+        let offset_x = anchor.x - start_wx;
+        let offset_y = anchor.y - start_wy;
+
+        let state = app.state::<AppState>();
+        state.dragging.store(true, Ordering::Relaxed);
+        let dragging_flag = state.dragging.clone();
+
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            let hwnd = hwnd_raw as windows_sys::Win32::Foundation::HWND;
+            let mut last_x = start_wx;
+            let mut last_y = start_wy;
+            let mut release_pt = anchor;
+
+            // Stretch phase: window chases the cursor exactly like a normal drag, but we
+            // remember the anchor so release can compute the opposite-direction launch.
+            loop {
+                let lbtn_down =
+                    unsafe { (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 };
+                if !lbtn_down {
+                    break;
+                }
+                let mut pt = POINT { x: 0, y: 0 };
+                if unsafe { GetCursorPos(&mut pt) } != 0 {
+                    release_pt = pt;
+                    let (v_left, v_top, v_w, v_h) = unsafe {
+                        (
+                            GetSystemMetrics(SM_XVIRTUALSCREEN),
+                            GetSystemMetrics(SM_YVIRTUALSCREEN),
+                            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                        )
+                    };
+                    let (nx, ny) = clamp_pet_drag_position(
+                        pt.x - offset_x,
+                        pt.y - offset_y,
+                        win_w,
+                        win_h,
+                        v_left,
+                        v_top,
+                        v_w,
+                        v_h,
+                    );
+                    if nx != last_x || ny != last_y {
+                        last_x = nx;
+                        last_y = ny;
+                        move_pet_window(hwnd, is_win7, nx, ny);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(8));
+            }
+
+            // Launch phase: pull vector = release cursor - anchor cursor. Launch opposite.
+            let pull_x = (release_pt.x - anchor.x) as f64;
+            let pull_y = (release_pt.y - anchor.y) as f64;
+            let mut lvx = -pull_x * SLINGSHOT_LAUNCH_FACTOR;
+            let mut lvy = -pull_y * SLINGSHOT_LAUNCH_FACTOR;
+            let speed = (lvx * lvx + lvy * lvy).sqrt();
+            if speed > SLINGSHOT_MAX_SPEED {
+                let s = SLINGSHOT_MAX_SPEED / speed;
+                lvx *= s;
+                lvy *= s;
+            }
+            // Only launch if the pull was meaningful (avoid launching on a still double-click).
+            if speed > THROW_MIN_SPEED {
+                run_ballistic_physics(
+                    hwnd_raw, is_win7, last_x, last_y, win_w, win_h, lvx, lvy,
+                );
+            }
+
             dragging_flag.store(false, Ordering::Relaxed);
         })
         .await;
@@ -2471,6 +2755,7 @@ pub fn run() {
             save_tail_picker_selection,
             set_dragging,
             start_pet_drag,
+            start_pet_slingshot,
             set_update_banner_open,
             is_win7_ulw_mode,
             win7_present_frame,
